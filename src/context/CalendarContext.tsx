@@ -1,7 +1,9 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   User,
+  inMemoryPersistence,
   onAuthStateChanged,
+  setPersistence,
   signInWithPopup,
   signOut,
 } from 'firebase/auth';
@@ -363,9 +365,48 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Não foi possível autenticar com o Google.';
-      if (!message.includes('popup-closed-by-user')) {
-        setAuthError('Falha ao conectar a conta Google do terminal. Tente novamente.');
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code ?? '')
+          : '';
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      console.error('Google Sign-In error:', code, rawMessage, err);
+
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        return;
+      }
+
+      if (code === 'auth/web-storage-unsupported') {
+        try {
+          await setPersistence(auth, inMemoryPersistence);
+          await signInWithPopup(auth, googleProvider);
+          return;
+        } catch (retryErr) {
+          console.error('Google Sign-In retry error:', retryErr);
+        }
+      }
+
+      if (code === 'auth/popup-blocked') {
+        setAuthError(
+          'O navegador bloqueou a janela de login do Google (auth/popup-blocked). Libere pop-ups para este endereço ou abra o aplicativo em uma nova aba e tente novamente.'
+        );
+      } else if (code === 'auth/unauthorized-domain') {
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
+        setAuthError(
+          `Domínio não autorizado no Firebase (${host || 'atual'}) [auth/unauthorized-domain]. Adicione este domínio em Firebase Console → Authentication → Settings → Authorized domains.`
+        );
+      } else if (code === 'auth/operation-not-allowed') {
+        setAuthError(
+          'O provedor de login com Google não está ativado no Firebase (auth/operation-not-allowed). Ative o Google em Firebase Console → Authentication → Sign-in method.'
+        );
+      } else if (code === 'auth/network-request-failed') {
+        setAuthError(
+          'Falha de conexão com o servidor do Google (auth/network-request-failed). Verifique a internet ou desative bloqueadores de pop-up/anúncios nesta página.'
+        );
+      } else {
+        setAuthError(
+          `Falha ao conectar a conta Google (${code || 'erro desconhecido'}). Tente novamente ou abra o app em uma nova aba.`
+        );
       }
     } finally {
       setIsSigningIn(false);

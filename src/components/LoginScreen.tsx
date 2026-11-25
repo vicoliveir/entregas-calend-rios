@@ -4,6 +4,7 @@ import {
   Building2,
   Check,
   Cloud,
+  ExternalLink,
   Eye,
   EyeOff,
   KeyRound,
@@ -116,9 +117,22 @@ export function LoginScreen() {
                 </div>
 
                 {authError && (
-                  <div className="rounded-2xl bg-[#C84343]/10 border border-[#C84343]/30 p-4 flex items-start gap-3 text-sm text-[#C84343]">
-                    <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-                    <span>{authError}</span>
+                  <div className="rounded-2xl bg-[#C84343]/10 border border-[#C84343]/30 p-4 space-y-3 text-sm text-[#C84343]">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                      <span className="leading-relaxed break-words">{authError}</span>
+                    </div>
+                    {typeof window !== 'undefined' && window.self !== window.top && (
+                      <a
+                        href={window.location.href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#575A4E] bg-white hover:bg-[#F8F9FA] border border-[#DDE7D9] px-3.5 py-2 rounded-xl transition-colors"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                        Abrir em nova aba para fazer login
+                      </a>
+                    )}
                   </div>
                 )}
 
