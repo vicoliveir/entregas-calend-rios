@@ -1,0 +1,6 @@
+{
+  "name": "Casa do Campo — Controle de Calendários",
+  "description": "Sistema PDV de balcão e painel gerencial para controle de distribuição de calendários da Casa do Campo nas filiais de Quixadá, Quixeramobim, Morada Nova e Iguatu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

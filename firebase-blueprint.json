@@ -1,0 +1,175 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "Cliente cadastrado na rede Casa do Campo com controle de retirada de calendário.",
+      "type": "object",
+      "properties": {
+        "registrationNumber": {
+          "type": "string",
+          "description": "Número de cadastro numérico único do cliente.",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[0-9]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "description": "Nome e sobrenome do cliente.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "hasPickedUp": {
+          "type": "boolean",
+          "description": "Indica se o cliente já realizou a retirada do calendário."
+        },
+        "deliveryCount": {
+          "type": "integer",
+          "description": "Total de calendários entregues a este cliente (1 comum + eventuais exceções gerenciais)."
+        },
+        "firstDeliveryAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data e hora da primeira retirada registrada (server timestamp)."
+        },
+        "firstDeliveryBranch": {
+          "type": "string",
+          "description": "Filial onde ocorreu a primeira retirada.",
+          "enum": [
+            "Quixadá (Matriz)",
+            "Quixeramobim",
+            "Morada Nova",
+            "Iguatu"
+          ]
+        },
+        "lastDeliveryAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data e hora da retirada mais recente (server timestamp)."
+        },
+        "lastDeliveryBranch": {
+          "type": "string",
+          "description": "Filial onde ocorreu a retirada mais recente.",
+          "enum": [
+            "Quixadá (Matriz)",
+            "Quixeramobim",
+            "Morada Nova",
+            "Iguatu"
+          ]
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "UID do terminal autenticado proprietário do registro.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de criação do servidor."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp de última atualização do servidor."
+        }
+      },
+      "required": [
+        "registrationNumber",
+        "fullName",
+        "hasPickedUp",
+        "deliveryCount",
+        "firstDeliveryAt",
+        "firstDeliveryBranch",
+        "lastDeliveryAt",
+        "lastDeliveryBranch",
+        "ownerUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Delivery": {
+      "title": "Delivery",
+      "description": "Registro imutável de auditoria para cada calendário entregue (comum ou exceção gerencial).",
+      "type": "object",
+      "properties": {
+        "registrationNumber": {
+          "type": "string",
+          "description": "Número de cadastro numérico do cliente vinculado.",
+          "minLength": 1,
+          "maxLength": 20,
+          "pattern": "^[0-9]+$"
+        },
+        "customerName": {
+          "type": "string",
+          "description": "Nome e sobrenome do cliente no momento da entrega.",
+          "minLength": 2,
+          "maxLength": 120
+        },
+        "branch": {
+          "type": "string",
+          "description": "Filial em que o calendário foi entregue.",
+          "enum": [
+            "Quixadá (Matriz)",
+            "Quixeramobim",
+            "Morada Nova",
+            "Iguatu"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "description": "Classificação da entrega: comum ou exceção autorizada pela gerência.",
+          "enum": [
+            "REGULAR",
+            "MANAGER_EXCEPTION"
+          ]
+        },
+        "justification": {
+          "type": "string",
+          "description": "Justificativa obrigatória para liberações gerenciais; string vazia para entregas comuns.",
+          "maxLength": 300
+        },
+        "operatorLabel": {
+          "type": "string",
+          "description": "Identificação do operador logado no caixa.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "ownerUid": {
+          "type": "string",
+          "description": "UID do terminal autenticado que gravou a entrega.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "deliveredAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Data e hora oficial do servidor no momento da entrega."
+        }
+      },
+      "required": [
+        "registrationNumber",
+        "customerName",
+        "branch",
+        "type",
+        "justification",
+        "operatorLabel",
+        "ownerUid",
+        "deliveredAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/customers/{registrationNumber}": {
+      "schema": {
+        "$ref": "#/entities/Customer"
+      },
+      "description": "Registro único de cada cliente indexado pelo número de cadastro para trava instantânea de 1 unidade."
+    },
+    "/deliveries/{deliveryId}": {
+      "schema": {
+        "$ref": "#/entities/Delivery"
+      },
+      "description": "Log imutável de auditoria de todas as entregas de calendários realizadas nas 4 filiais."
+    }
+  }
+}

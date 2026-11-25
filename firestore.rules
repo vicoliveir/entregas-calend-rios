@@ -1,0 +1,217 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Reusable Hardened Global Helpers
+    // =========================================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrapAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'victorhugoqxd@gmail.com';
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidRegistrationNumber(num) {
+      return num is string && num.size() >= 1 && num.size() <= 20 && num.matches('^[0-9]+$');
+    }
+
+    function isValidBranch(branch) {
+      return branch is string && branch in [
+        'Quixadá (Matriz)',
+        'Quixeramobim',
+        'Morada Nova',
+        'Iguatu'
+      ];
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Anti-Update-Gap: no existing() or diff() inside)
+    // =========================================================================
+    function isValidCustomer(data, regNum) {
+      return data.keys().hasAll([
+          'registrationNumber',
+          'fullName',
+          'hasPickedUp',
+          'deliveryCount',
+          'firstDeliveryAt',
+          'firstDeliveryBranch',
+          'lastDeliveryAt',
+          'lastDeliveryBranch',
+          'ownerUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'registrationNumber',
+          'fullName',
+          'hasPickedUp',
+          'deliveryCount',
+          'firstDeliveryAt',
+          'firstDeliveryBranch',
+          'lastDeliveryAt',
+          'lastDeliveryBranch',
+          'ownerUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidRegistrationNumber(data.registrationNumber) &&
+        data.registrationNumber == regNum &&
+        data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 120 &&
+        data.hasPickedUp is bool && data.hasPickedUp == true &&
+        data.deliveryCount is int && data.deliveryCount >= 1 && data.deliveryCount <= 100 &&
+        data.firstDeliveryAt is timestamp &&
+        isValidBranch(data.firstDeliveryBranch) &&
+        data.lastDeliveryAt is timestamp &&
+        isValidBranch(data.lastDeliveryBranch) &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDelivery(data) {
+      return data.keys().hasAll([
+          'registrationNumber',
+          'customerName',
+          'branch',
+          'type',
+          'justification',
+          'operatorLabel',
+          'ownerUid',
+          'deliveredAt'
+        ]) &&
+        data.keys().hasOnly([
+          'registrationNumber',
+          'customerName',
+          'branch',
+          'type',
+          'justification',
+          'operatorLabel',
+          'ownerUid',
+          'deliveredAt'
+        ]) &&
+        isValidRegistrationNumber(data.registrationNumber) &&
+        data.customerName is string && data.customerName.size() >= 2 && data.customerName.size() <= 120 &&
+        isValidBranch(data.branch) &&
+        data.type is string && data.type in ['REGULAR', 'MANAGER_EXCEPTION'] &&
+        data.justification is string && data.justification.size() <= 300 &&
+        (
+          (data.type == 'REGULAR' && data.justification.size() == 0) ||
+          (data.type == 'MANAGER_EXCEPTION' && data.justification.size() >= 3)
+        ) &&
+        data.operatorLabel is string && data.operatorLabel.size() >= 1 && data.operatorLabel.size() <= 80 &&
+        data.ownerUid is string && data.ownerUid.size() >= 1 && data.ownerUid.size() <= 128 &&
+        data.deliveredAt is timestamp;
+    }
+
+    function isCustomerExceptionIncrement() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+          'deliveryCount',
+          'lastDeliveryAt',
+          'lastDeliveryBranch',
+          'updatedAt'
+        ]) &&
+        incoming().registrationNumber == existing().registrationNumber &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().firstDeliveryAt == existing().firstDeliveryAt &&
+        incoming().firstDeliveryBranch == existing().firstDeliveryBranch &&
+        incoming().hasPickedUp == true &&
+        incoming().deliveryCount == existing().deliveryCount + 1 &&
+        incoming().lastDeliveryAt == request.time &&
+        incoming().updatedAt == request.time;
+    }
+
+    // =========================================================================
+    // Collection: /customers/{registrationNumber}
+    // =========================================================================
+    match /customers/{registrationNumber} {
+      allow get: if isVerifiedUser() &&
+        isValidRegistrationNumber(registrationNumber) &&
+        (resource == null || existing().ownerUid == request.auth.uid || isBootstrapAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.ownerUid == request.auth.uid || isBootstrapAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidRegistrationNumber(registrationNumber) &&
+        isValidCustomer(incoming(), registrationNumber) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().deliveryCount == 1 &&
+        incoming().firstDeliveryAt == request.time &&
+        incoming().lastDeliveryAt == request.time &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        incoming().firstDeliveryBranch == incoming().lastDeliveryBranch;
+
+      allow update: if isVerifiedUser() &&
+        isValidRegistrationNumber(registrationNumber) &&
+        isValidCustomer(incoming(), registrationNumber) &&
+        (existing().ownerUid == request.auth.uid || isBootstrapAdmin()) &&
+        isCustomerExceptionIncrement();
+
+      allow delete: if false;
+    }
+
+    // =========================================================================
+    // Collection: /deliveries/{deliveryId}
+    // =========================================================================
+    match /deliveries/{deliveryId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(deliveryId) &&
+        (resource == null || existing().ownerUid == request.auth.uid || isBootstrapAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.ownerUid == request.auth.uid || isBootstrapAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(deliveryId) &&
+        isValidDelivery(incoming()) &&
+        incoming().ownerUid == request.auth.uid &&
+        incoming().deliveredAt == request.time &&
+        (
+          (
+            incoming().type == 'REGULAR' &&
+            !exists(/databases/$(database)/documents/customers/$(incoming().registrationNumber)) &&
+            existsAfter(/databases/$(database)/documents/customers/$(incoming().registrationNumber)) &&
+            getAfter(/databases/$(database)/documents/customers/$(incoming().registrationNumber)).data.deliveryCount == 1
+          ) ||
+          (
+            incoming().type == 'MANAGER_EXCEPTION' &&
+            exists(/databases/$(database)/documents/customers/$(incoming().registrationNumber)) &&
+            (
+              get(/databases/$(database)/documents/customers/$(incoming().registrationNumber)).data.ownerUid == request.auth.uid ||
+              isBootstrapAdmin()
+            ) &&
+            getAfter(/databases/$(database)/documents/customers/$(incoming().registrationNumber)).data.deliveryCount ==
+              get(/databases/$(database)/documents/customers/$(incoming().registrationNumber)).data.deliveryCount + 1
+          )
+        );
+
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}
