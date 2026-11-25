@@ -8,6 +8,41 @@ export const FULL_NAME_MAX_LENGTH = 120;
 export const JUSTIFICATION_MIN_LENGTH = 3;
 export const JUSTIFICATION_MAX_LENGTH = 300;
 export const OPERATOR_LABEL_MAX_LENGTH = 80;
+export const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const EMAIL_MIN_LENGTH = 5;
+export const EMAIL_MAX_LENGTH = 120;
+export const TERMINAL_LABEL_MIN_LENGTH = 2;
+export const TERMINAL_LABEL_MAX_LENGTH = 80;
+
+export function sanitizeEmail(raw: string): string {
+  return raw.trim().toLowerCase().slice(0, EMAIL_MAX_LENGTH);
+}
+
+export function isValidEmail(raw: string): boolean {
+  const clean = sanitizeEmail(raw);
+  return (
+    clean.length >= EMAIL_MIN_LENGTH &&
+    clean.length <= EMAIL_MAX_LENGTH &&
+    EMAIL_PATTERN.test(clean)
+  );
+}
+
+export function emailToDocId(email: string): string {
+  return email
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '_')
+    .slice(0, 128);
+}
+
+export function sanitizeTerminalLabel(raw: string): string {
+  return raw.replace(/\s+/g, ' ').trim().slice(0, TERMINAL_LABEL_MAX_LENGTH);
+}
+
+export function isValidTerminalLabel(raw: string): boolean {
+  const clean = sanitizeTerminalLabel(raw);
+  return clean.length >= TERMINAL_LABEL_MIN_LENGTH && clean.length <= TERMINAL_LABEL_MAX_LENGTH;
+}
 
 export function sanitizeRegistrationNumber(raw: string): string {
   return raw.replace(/\D+/g, '').slice(0, REGISTRATION_NUMBER_MAX_LENGTH);

@@ -41,6 +41,17 @@ export interface DeliveryRecord {
   deliveredAt: Timestamp | null;
 }
 
+export interface AuthorizedEmailRecord {
+  id: string;
+  email: string;
+  branch: BranchName;
+  label: string;
+  active: boolean;
+  addedByUid: string;
+  createdAt: Timestamp | null;
+  updatedAt: Timestamp | null;
+}
+
 export interface ToastMessage {
   id: string;
   kind: 'success' | 'blocked' | 'exception' | 'error';

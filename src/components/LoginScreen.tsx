@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   AlertCircle,
   Building2,
@@ -8,10 +8,17 @@ import {
   EyeOff,
   KeyRound,
   LogOut,
+  ShieldAlert,
   ShieldCheck,
   User as UserIcon,
 } from 'lucide-react';
-import { BRANCHES, BranchName, DEFAULT_CASHIER_PASS, DEFAULT_CASHIER_USER } from '../types';
+import {
+  BOOTSTRAP_ADMIN_EMAIL,
+  BRANCHES,
+  BranchName,
+  DEFAULT_CASHIER_PASS,
+  DEFAULT_CASHIER_USER,
+} from '../types';
 import { useCalendar } from '../context/CalendarContext';
 import { CasaDoCampoLogo } from './CasaDoCampoLogo';
 
@@ -19,6 +26,8 @@ export function LoginScreen() {
   const {
     user,
     authReady,
+    authorizationStatus,
+    authorizedProfile,
     authError,
     isSigningIn,
     signInWithGoogle,
@@ -32,6 +41,13 @@ export function LoginScreen() {
   const [selectedBranch, setSelectedBranch] = useState<BranchName>('Quixadá (Matriz)');
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Auto-select the store's assigned branch when an authorized store email signs in
+  useEffect(() => {
+    if (authorizedProfile?.branch) {
+      setSelectedBranch(authorizedProfile.branch);
+    }
+  }, [authorizedProfile?.branch]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -43,7 +59,6 @@ export function LoginScreen() {
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] flex flex-col justify-between">
-      {/* Main Centered Split Canvas */}
       <main className="flex-1 flex items-center justify-center p-4 sm:p-8">
         <div className="w-full max-w-5xl grid grid-cols-1 lg:grid-cols-12 rounded-3xl overflow-hidden soft-card border border-[#DDE7D9]">
           {/* Left Institutional Brand Panel */}
@@ -79,10 +94,14 @@ export function LoginScreen() {
 
           {/* Right Interactive Access Form */}
           <div className="lg:col-span-7 bg-white p-7 sm:p-10 flex flex-col justify-center">
-            {!authReady ? (
+            {!authReady || (user && authorizationStatus === 'checking') ? (
               <div className="py-12 text-center space-y-3">
                 <div className="w-10 h-10 rounded-full border-3 border-[#DDE7D9] border-t-[#649A4E] animate-spin mx-auto" />
-                <p className="text-sm text-[#5E6954]">Verificando conexão segura com a nuvem...</p>
+                <p className="text-sm text-[#5E6954]">
+                  {!authReady
+                    ? 'Verificando conexão segura com a nuvem...'
+                    : 'Validando autorização da conta da loja...'}
+                </p>
               </div>
             ) : !user ? (
               <div className="space-y-6">
@@ -91,8 +110,8 @@ export function LoginScreen() {
                     Conectar Terminal à Nuvem
                   </h2>
                   <p className="text-sm text-[#5E6954] leading-relaxed">
-                    Autorize este caixa com a conta Google da Casa do Campo para ativar o banco de
-                    dados compartilhado entre Quixadá, Quixeramobim, Morada Nova e Iguatu.
+                    Entre com a conta Google autorizada da sua filial para sincronizar em tempo real
+                    com Quixadá, Quixeramobim, Morada Nova e Iguatu.
                   </p>
                 </div>
 
@@ -110,16 +129,54 @@ export function LoginScreen() {
                   className="w-full min-h-[56px] rounded-2xl bg-[#649A4E] hover:bg-[#5E6954] disabled:opacity-60 text-white font-display font-semibold text-base px-6 py-3.5 flex items-center justify-center gap-3 transition-colors shadow-lg shadow-[#649A4E]/15 cursor-pointer"
                 >
                   <Cloud className="w-5 h-5" />
-                  {isSigningIn ? 'Conectando...' : 'Conectar Terminal com Google'}
+                  {isSigningIn ? 'Conectando...' : 'Entrar com Conta Google da Loja'}
                 </button>
 
                 <div className="rounded-2xl bg-[#F8F9FA] border border-[#DDE7D9] p-4 flex items-start gap-3">
                   <ShieldCheck className="w-5 h-5 text-[#649A4E] shrink-0 mt-0.5" />
                   <p className="text-xs text-[#5E6954] leading-relaxed">
-                    Após conectar o terminal, o operador fará o login compartilhado do caixa e
-                    escolherá a loja de atendimento.
+                    Cada loja pode usar seu próprio e-mail Google desde que esteja liberado pelo
+                    administrador no <strong>Painel Gerencial → Contas das Lojas</strong>.
                   </p>
                 </div>
+              </div>
+            ) : authorizationStatus === 'unauthorized' ? (
+              <div className="space-y-6">
+                <div className="rounded-2xl bg-[#C84343]/10 border border-[#C84343]/35 p-5 flex items-start gap-4">
+                  <div className="w-11 h-11 rounded-2xl bg-[#C84343] text-white flex items-center justify-center shrink-0">
+                    <ShieldAlert className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1.5">
+                    <h2 className="font-display font-semibold text-lg text-[#C84343]">
+                      {authorizedProfile && !authorizedProfile.active
+                        ? 'Acesso da Loja Temporariamente Suspenso'
+                        : 'Conta Google Ainda Não Autorizada'}
+                    </h2>
+                    <p className="text-sm text-[#575A4E] leading-relaxed">
+                      O e-mail <strong className="font-semibold">{user.email}</strong> não possui
+                      permissão ativa para operar o banco compartilhado da Casa do Campo.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-[#F8F9FA] border border-[#DDE7D9] p-4 space-y-2 text-xs text-[#5E6954] leading-relaxed">
+                  <p className="font-semibold text-[#575A4E]">Como liberar este terminal:</p>
+                  <p>
+                    Solicite ao administrador ({BOOTSTRAP_ADMIN_EMAIL}) que acesse{' '}
+                    <strong>Acesso Gerência → Contas das Lojas</strong> e cadastre ou ative o e-mail{' '}
+                    <strong className="text-[#575A4E]">{user.email}</strong>. Assim que for liberado,
+                    esta tela desbloqueará automaticamente.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void signOutTerminal()}
+                  className="w-full min-h-[52px] rounded-2xl border border-[#DDE7D9] bg-white hover:bg-[#F8F9FA] text-[#575A4E] font-display font-semibold text-sm px-6 py-3 inline-flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                >
+                  <LogOut className="w-4 h-4" />
+                  Trocar Conta Google
+                </button>
               </div>
             ) : (
               <form onSubmit={handleSubmit} className="space-y-6">
@@ -129,7 +186,9 @@ export function LoginScreen() {
                       Acesso do Caixa
                     </h2>
                     <p className="text-xs text-[#64795A] mt-1">
-                      Terminal conectado como <span className="font-medium text-[#575A4E]">{user.email}</span>
+                      Terminal autorizado:{' '}
+                      <span className="font-medium text-[#575A4E]">{user.email}</span>
+                      {authorizedProfile?.label ? ` · ${authorizedProfile.label}` : ''}
                     </p>
                   </div>
                   <button
@@ -236,7 +295,9 @@ export function LoginScreen() {
                 </button>
 
                 <p className="text-xs text-[#64795A] text-center">
-                  Credenciais padrão do balcão: usuário <span className="font-semibold text-[#575A4E]">{DEFAULT_CASHIER_USER}</span> · senha <span className="font-semibold text-[#575A4E]">{DEFAULT_CASHIER_PASS}</span>
+                  Credenciais padrão do balcão: usuário{' '}
+                  <span className="font-semibold text-[#575A4E]">{DEFAULT_CASHIER_USER}</span> · senha{' '}
+                  <span className="font-semibold text-[#575A4E]">{DEFAULT_CASHIER_PASS}</span>
                 </p>
               </form>
             )}

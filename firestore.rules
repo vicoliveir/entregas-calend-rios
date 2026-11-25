@@ -19,7 +19,22 @@ service cloud.firestore {
     }
 
     function isBootstrapAdmin() {
-      return isVerifiedUser() && request.auth.token.email == 'victorhugoqxd@gmail.com';
+      return isVerifiedUser() &&
+        request.auth.token.email is string &&
+        request.auth.token.email.lower() == 'victorhugoqxd@gmail.com';
+    }
+
+    function emailToDocId(email) {
+      return email.lower().replace('[^a-z0-9]', '_');
+    }
+
+    function isAuthorizedOperator() {
+      return isBootstrapAdmin() || (
+        isVerifiedUser() &&
+        request.auth.token.email is string &&
+        exists(/databases/$(database)/documents/authorized_emails/$(emailToDocId(request.auth.token.email))) &&
+        get(/databases/$(database)/documents/authorized_emails/$(emailToDocId(request.auth.token.email))).data.active == true
+      );
     }
 
     function incoming() {
@@ -38,6 +53,14 @@ service cloud.firestore {
       return num is string && num.size() >= 1 && num.size() <= 20 && num.matches('^[0-9]+$');
     }
 
+    function isValidEmail(email) {
+      return email is string &&
+        email.size() >= 5 &&
+        email.size() <= 120 &&
+        email == email.lower() &&
+        email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$');
+    }
+
     function isValidBranch(branch) {
       return branch is string && branch in [
         'Quixadá (Matriz)',
@@ -50,6 +73,35 @@ service cloud.firestore {
     // =========================================================================
     // Validation Blueprints (Anti-Update-Gap: no existing() or diff() inside)
     // =========================================================================
+    function isValidAuthorizedEmail(data, docId) {
+      return data.keys().hasAll([
+          'email',
+          'branch',
+          'label',
+          'active',
+          'addedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'email',
+          'branch',
+          'label',
+          'active',
+          'addedByUid',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidEmail(data.email) &&
+        emailToDocId(data.email) == docId &&
+        isValidBranch(data.branch) &&
+        data.label is string && data.label.size() >= 2 && data.label.size() <= 80 &&
+        data.active is bool &&
+        data.addedByUid is string && data.addedByUid.size() >= 1 && data.addedByUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidCustomer(data, regNum) {
       return data.keys().hasAll([
           'registrationNumber',
@@ -126,6 +178,19 @@ service cloud.firestore {
         data.deliveredAt is timestamp;
     }
 
+    function isAuthorizedEmailUpdateAction() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+          'branch',
+          'label',
+          'active',
+          'updatedAt'
+        ]) &&
+        incoming().email == existing().email &&
+        incoming().addedByUid == existing().addedByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+    }
+
     function isCustomerExceptionIncrement() {
       return incoming().diff(existing()).affectedKeys().hasOnly([
           'deliveryCount',
@@ -144,18 +209,66 @@ service cloud.firestore {
         incoming().updatedAt == request.time;
     }
 
+    function isCustomerDeliveryReversal() {
+      return incoming().diff(existing()).affectedKeys().hasOnly([
+          'deliveryCount',
+          'firstDeliveryAt',
+          'firstDeliveryBranch',
+          'lastDeliveryAt',
+          'lastDeliveryBranch',
+          'updatedAt'
+        ]) &&
+        incoming().registrationNumber == existing().registrationNumber &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().hasPickedUp == true &&
+        incoming().deliveryCount == existing().deliveryCount - 1 &&
+        incoming().deliveryCount >= 1 &&
+        incoming().updatedAt == request.time;
+    }
+
+    // =========================================================================
+    // Collection: /authorized_emails/{emailDocId}
+    // =========================================================================
+    match /authorized_emails/{emailDocId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(emailDocId) &&
+        (
+          isBootstrapAdmin() ||
+          (
+            request.auth.token.email is string &&
+            emailToDocId(request.auth.token.email) == emailDocId
+          )
+        );
+
+      allow list: if isBootstrapAdmin();
+
+      allow create: if isBootstrapAdmin() &&
+        isValidId(emailDocId) &&
+        isValidAuthorizedEmail(incoming(), emailDocId) &&
+        incoming().addedByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isBootstrapAdmin() &&
+        isValidId(emailDocId) &&
+        isValidAuthorizedEmail(incoming(), emailDocId) &&
+        isAuthorizedEmailUpdateAction();
+
+      allow delete: if isBootstrapAdmin() &&
+        isValidId(emailDocId);
+    }
+
     // =========================================================================
     // Collection: /customers/{registrationNumber}
     // =========================================================================
     match /customers/{registrationNumber} {
-      allow get: if isVerifiedUser() &&
-        isValidRegistrationNumber(registrationNumber) &&
-        (resource == null || existing().ownerUid == request.auth.uid || isBootstrapAdmin());
+      allow get: if isAuthorizedOperator() &&
+        isValidRegistrationNumber(registrationNumber);
 
-      allow list: if isVerifiedUser() &&
-        (resource.data.ownerUid == request.auth.uid || isBootstrapAdmin());
+      allow list: if isAuthorizedOperator();
 
-      allow create: if isVerifiedUser() &&
+      allow create: if isAuthorizedOperator() &&
         isValidRegistrationNumber(registrationNumber) &&
         isValidCustomer(incoming(), registrationNumber) &&
         incoming().ownerUid == request.auth.uid &&
@@ -166,27 +279,29 @@ service cloud.firestore {
         incoming().updatedAt == request.time &&
         incoming().firstDeliveryBranch == incoming().lastDeliveryBranch;
 
-      allow update: if isVerifiedUser() &&
+      allow update: if isAuthorizedOperator() &&
         isValidRegistrationNumber(registrationNumber) &&
         isValidCustomer(incoming(), registrationNumber) &&
-        (existing().ownerUid == request.auth.uid || isBootstrapAdmin()) &&
-        isCustomerExceptionIncrement();
+        (
+          isCustomerExceptionIncrement() ||
+          isCustomerDeliveryReversal()
+        );
 
-      allow delete: if false;
+      allow delete: if isAuthorizedOperator() &&
+        isValidRegistrationNumber(registrationNumber) &&
+        existing().deliveryCount == 1;
     }
 
     // =========================================================================
     // Collection: /deliveries/{deliveryId}
     // =========================================================================
     match /deliveries/{deliveryId} {
-      allow get: if isVerifiedUser() &&
-        isValidId(deliveryId) &&
-        (resource == null || existing().ownerUid == request.auth.uid || isBootstrapAdmin());
+      allow get: if isAuthorizedOperator() &&
+        isValidId(deliveryId);
 
-      allow list: if isVerifiedUser() &&
-        (resource.data.ownerUid == request.auth.uid || isBootstrapAdmin());
+      allow list: if isAuthorizedOperator();
 
-      allow create: if isVerifiedUser() &&
+      allow create: if isAuthorizedOperator() &&
         isValidId(deliveryId) &&
         isValidDelivery(incoming()) &&
         incoming().ownerUid == request.auth.uid &&
@@ -201,17 +316,20 @@ service cloud.firestore {
           (
             incoming().type == 'MANAGER_EXCEPTION' &&
             exists(/databases/$(database)/documents/customers/$(incoming().registrationNumber)) &&
-            (
-              get(/databases/$(database)/documents/customers/$(incoming().registrationNumber)).data.ownerUid == request.auth.uid ||
-              isBootstrapAdmin()
-            ) &&
             getAfter(/databases/$(database)/documents/customers/$(incoming().registrationNumber)).data.deliveryCount ==
               get(/databases/$(database)/documents/customers/$(incoming().registrationNumber)).data.deliveryCount + 1
           )
         );
 
       allow update: if false;
-      allow delete: if false;
+
+      allow delete: if isAuthorizedOperator() &&
+        isValidId(deliveryId) &&
+        (
+          !existsAfter(/databases/$(database)/documents/customers/$(existing().registrationNumber)) ||
+          getAfter(/databases/$(database)/documents/customers/$(existing().registrationNumber)).data.deliveryCount ==
+            get(/databases/$(database)/documents/customers/$(existing().registrationNumber)).data.deliveryCount - 1
+        );
     }
   }
 }

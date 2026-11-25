@@ -9,11 +9,11 @@ import { ManagerPinModal } from './components/ManagerPinModal';
 import { ToastContainer } from './components/ToastContainer';
 
 function AppShell() {
-  const { user, authReady, cashierSession } = useCalendar();
+  const { user, authReady, authorizationStatus, cashierSession } = useCalendar();
   const [activeView, setActiveView] = useState<'pos' | 'manager'>('pos');
   const [managerPinModalOpen, setManagerPinModalOpen] = useState(false);
 
-  if (!authReady || !user || !cashierSession) {
+  if (!authReady || !user || authorizationStatus !== 'authorized' || !cashierSession) {
     return (
       <>
         <LoginScreen />

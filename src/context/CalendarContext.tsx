@@ -7,15 +7,17 @@ import {
 } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   onSnapshot,
-  query,
   serverTimestamp,
-  where,
+  setDoc,
+  updateDoc,
   writeBatch,
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 import {
+  AuthorizedEmailRecord,
   BOOTSTRAP_ADMIN_EMAIL,
   BranchName,
   CustomerRecord,
@@ -25,14 +27,19 @@ import {
   ToastMessage,
 } from '../types';
 import {
+  emailToDocId,
   isValidBranch,
+  isValidEmail,
   isValidFullName,
   isValidJustification,
   isValidRegistrationNumber,
+  isValidTerminalLabel,
+  sanitizeEmail,
   sanitizeFullName,
   sanitizeJustification,
   sanitizeOperatorLabel,
   sanitizeRegistrationNumber,
+  sanitizeTerminalLabel,
 } from '../utils/validation';
 
 interface CashierSession {
@@ -40,9 +47,14 @@ interface CashierSession {
   activeBranch: BranchName;
 }
 
+export type AuthorizationStatus = 'idle' | 'checking' | 'authorized' | 'unauthorized';
+
 interface CalendarContextValue {
   user: User | null;
   authReady: boolean;
+  isAdminUser: boolean;
+  authorizationStatus: AuthorizationStatus;
+  authorizedProfile: AuthorizedEmailRecord | null;
   authError: string | null;
   isSigningIn: boolean;
   signInWithGoogle: () => Promise<void>;
@@ -57,8 +69,18 @@ interface CalendarContextValue {
   deliveries: DeliveryRecord[];
   dataLoading: boolean;
 
+  authorizedEmails: AuthorizedEmailRecord[];
+  authorizedEmailsLoading: boolean;
+  addAuthorizedEmail: (email: string, branch: BranchName, label: string) => Promise<void>;
+  updateAuthorizedEmail: (
+    record: AuthorizedEmailRecord,
+    updates: { active?: boolean; branch?: BranchName; label?: string }
+  ) => Promise<void>;
+  removeAuthorizedEmail: (emailDocId: string) => Promise<void>;
+
   confirmRegularDelivery: (registrationNumber: string, fullName: string) => Promise<void>;
   confirmManagerException: (customer: CustomerRecord, justification: string) => Promise<void>;
+  deleteDelivery: (delivery: DeliveryRecord) => Promise<void>;
 
   toasts: ToastMessage[];
   pushToast: (toast: Omit<ToastMessage, 'id'>) => void;
@@ -97,6 +119,9 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
   const [authError, setAuthError] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
 
+  const [authorizationStatus, setAuthorizationStatus] = useState<AuthorizationStatus>('idle');
+  const [authorizedProfile, setAuthorizedProfile] = useState<AuthorizedEmailRecord | null>(null);
+
   const [cashierSession, setCashierSession] = useState<CashierSession | null>(() =>
     loadStoredCashierSession()
   );
@@ -105,7 +130,16 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
   const [deliveries, setDeliveries] = useState<DeliveryRecord[]>([]);
   const [customersLoaded, setCustomersLoaded] = useState(false);
   const [deliveriesLoaded, setDeliveriesLoaded] = useState(false);
+
+  const [authorizedEmails, setAuthorizedEmails] = useState<AuthorizedEmailRecord[]>([]);
+  const [authorizedEmailsLoaded, setAuthorizedEmailsLoaded] = useState(false);
+
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  const isAdminUser = Boolean(
+    user?.emailVerified &&
+      user.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()
+  );
 
   const pushToast = useCallback((toast: Omit<ToastMessage, 'id'>) => {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -124,37 +158,134 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
       setUser(firebaseUser);
       setAuthReady(true);
       if (!firebaseUser) {
+        setAuthorizationStatus('idle');
+        setAuthorizedProfile(null);
         setCustomers([]);
         setDeliveries([]);
+        setAuthorizedEmails([]);
         setCustomersLoaded(false);
         setDeliveriesLoaded(false);
+        setAuthorizedEmailsLoaded(false);
       }
     });
     return () => unsub();
   }, []);
 
-  // Attach real-time Firestore listeners only when auth is ready and user email is verified
+  // Verify terminal email authorization in real time
   useEffect(() => {
-    if (!authReady || !user || !user.emailVerified) {
+    if (!authReady || !user) {
+      setAuthorizationStatus('idle');
+      setAuthorizedProfile(null);
+      return;
+    }
+
+    if (!user.emailVerified || !user.email) {
+      setAuthorizationStatus('unauthorized');
+      setAuthorizedProfile(null);
+      return;
+    }
+
+    if (isAdminUser) {
+      setAuthorizationStatus('authorized');
+      setAuthorizedProfile(null);
+      return;
+    }
+
+    setAuthorizationStatus('checking');
+    const docId = emailToDocId(user.email);
+    const ownRef = doc(db, 'authorized_emails', docId);
+
+    const unsubOwnAuth = onSnapshot(
+      ownRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          const record: AuthorizedEmailRecord = {
+            id: docSnap.id,
+            email: String(data.email ?? user.email?.toLowerCase() ?? ''),
+            branch: data.branch as BranchName,
+            label: String(data.label ?? ''),
+            active: Boolean(data.active),
+            addedByUid: String(data.addedByUid ?? ''),
+            createdAt: data.createdAt ?? null,
+            updatedAt: data.updatedAt ?? null,
+          };
+          if (record.active) {
+            setAuthorizedProfile(record);
+            setAuthorizationStatus('authorized');
+          } else {
+            setAuthorizedProfile(record);
+            setAuthorizationStatus('unauthorized');
+            sessionStorage.removeItem(SESSION_STORAGE_KEY);
+            setCashierSession(null);
+          }
+        } else {
+          setAuthorizedProfile(null);
+          setAuthorizationStatus('unauthorized');
+          sessionStorage.removeItem(SESSION_STORAGE_KEY);
+          setCashierSession(null);
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, `authorized_emails/${docId}`);
+      }
+    );
+
+    return () => unsubOwnAuth();
+  }, [authReady, user, isAdminUser]);
+
+  // Admin real-time listener for all authorized store emails
+  useEffect(() => {
+    if (!authReady || !user || !isAdminUser) {
+      setAuthorizedEmails([]);
+      setAuthorizedEmailsLoaded(false);
+      return;
+    }
+
+    setAuthorizedEmailsLoaded(false);
+    const unsubEmails = onSnapshot(
+      collection(db, 'authorized_emails'),
+      (snapshot) => {
+        const list: AuthorizedEmailRecord[] = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            id: docSnap.id,
+            email: String(data.email ?? ''),
+            branch: data.branch as BranchName,
+            label: String(data.label ?? ''),
+            active: Boolean(data.active),
+            addedByUid: String(data.addedByUid ?? ''),
+            createdAt: data.createdAt ?? null,
+            updatedAt: data.updatedAt ?? null,
+          };
+        });
+        list.sort((a, b) => a.branch.localeCompare(b.branch) || a.email.localeCompare(b.email));
+        setAuthorizedEmails(list);
+        setAuthorizedEmailsLoaded(true);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'authorized_emails');
+      }
+    );
+
+    return () => unsubEmails();
+  }, [authReady, user, isAdminUser]);
+
+  // Attach shared real-time Firestore listeners once terminal email is authorized
+  useEffect(() => {
+    if (!authReady || !user || authorizationStatus !== 'authorized') {
+      setCustomers([]);
+      setDeliveries([]);
+      setCustomersLoaded(false);
+      setDeliveriesLoaded(false);
       return;
     }
 
     setCustomersLoaded(false);
     setDeliveriesLoaded(false);
 
-    const isBootstrapAdmin =
-      user.emailVerified && user.email?.toLowerCase() === BOOTSTRAP_ADMIN_EMAIL.toLowerCase();
-
-    const customersQuery = isBootstrapAdmin
-      ? collection(db, 'customers')
-      : query(collection(db, 'customers'), where('ownerUid', '==', user.uid));
-
-    const deliveriesQuery = isBootstrapAdmin
-      ? collection(db, 'deliveries')
-      : query(collection(db, 'deliveries'), where('ownerUid', '==', user.uid));
-
     const unsubCustomers = onSnapshot(
-      customersQuery,
+      collection(db, 'customers'),
       (snapshot) => {
         const list: CustomerRecord[] = snapshot.docs.map((docSnap) => {
           const data = docSnap.data();
@@ -181,7 +312,7 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
     );
 
     const unsubDeliveries = onSnapshot(
-      deliveriesQuery,
+      collection(db, 'deliveries'),
       (snapshot) => {
         const list: DeliveryRecord[] = snapshot.docs.map((docSnap) => {
           const data = docSnap.data();
@@ -198,7 +329,6 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
           };
         });
 
-        // Client-side descending chronological sort (avoids composite index requirement)
         list.sort((a, b) => {
           const timeA = a.deliveredAt ? a.deliveredAt.toMillis() : Date.now();
           const timeB = b.deliveredAt ? b.deliveredAt.toMillis() : Date.now();
@@ -217,7 +347,7 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
       unsubCustomers();
       unsubDeliveries();
     };
-  }, [authReady, user]);
+  }, [authReady, user, authorizationStatus]);
 
   const customersByNumber = useMemo(() => {
     const map = new Map<string, CustomerRecord>();
@@ -292,10 +422,104 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
     setCashierSession(null);
   }, []);
 
+  const addAuthorizedEmail = useCallback(
+    async (rawEmail: string, branch: BranchName, rawLabel: string) => {
+      if (!user || !isAdminUser) {
+        throw new Error('Apenas o administrador principal pode autorizar novas contas Google.');
+      }
+
+      const cleanEmail = sanitizeEmail(rawEmail);
+      const cleanLabel = sanitizeTerminalLabel(rawLabel);
+
+      if (!isValidEmail(cleanEmail)) {
+        throw new Error('Digite um endereço de e-mail Google válido.');
+      }
+      if (cleanEmail === BOOTSTRAP_ADMIN_EMAIL.toLowerCase()) {
+        throw new Error('Este e-mail já é o administrador principal da Casa do Campo.');
+      }
+      if (!isValidBranch(branch)) {
+        throw new Error('Selecione uma filial válida.');
+      }
+      if (!isValidTerminalLabel(cleanLabel)) {
+        throw new Error('Informe uma identificação do caixa/loja (mínimo 2 caracteres).');
+      }
+
+      const docId = emailToDocId(cleanEmail);
+      if (authorizedEmails.some((item) => item.id === docId)) {
+        throw new Error('Este e-mail já está cadastrado na lista de contas autorizadas.');
+      }
+
+      try {
+        await setDoc(doc(db, 'authorized_emails', docId), {
+          email: cleanEmail,
+          branch,
+          label: cleanLabel,
+          active: true,
+          addedByUid: user.uid,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, `authorized_emails/${docId}`);
+      }
+    },
+    [user, isAdminUser, authorizedEmails]
+  );
+
+  const updateAuthorizedEmail = useCallback(
+    async (
+      record: AuthorizedEmailRecord,
+      updates: { active?: boolean; branch?: BranchName; label?: string }
+    ) => {
+      if (!user || !isAdminUser) {
+        throw new Error('Apenas o administrador principal pode alterar contas autorizadas.');
+      }
+
+      const nextBranch = updates.branch ?? record.branch;
+      const nextLabel =
+        updates.label !== undefined ? sanitizeTerminalLabel(updates.label) : record.label;
+      const nextActive = updates.active !== undefined ? updates.active : record.active;
+
+      if (!isValidBranch(nextBranch)) {
+        throw new Error('Filial inválida.');
+      }
+      if (!isValidTerminalLabel(nextLabel)) {
+        throw new Error('Identificação do caixa inválida.');
+      }
+
+      try {
+        await updateDoc(doc(db, 'authorized_emails', record.id), {
+          branch: nextBranch,
+          label: nextLabel,
+          active: nextActive,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `authorized_emails/${record.id}`);
+      }
+    },
+    [user, isAdminUser]
+  );
+
+  const removeAuthorizedEmail = useCallback(
+    async (emailDocId: string) => {
+      if (!user || !isAdminUser) {
+        throw new Error('Apenas o administrador principal pode remover contas autorizadas.');
+      }
+
+      try {
+        await deleteDoc(doc(db, 'authorized_emails', emailDocId));
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `authorized_emails/${emailDocId}`);
+      }
+    },
+    [user, isAdminUser]
+  );
+
   const confirmRegularDelivery = useCallback(
     async (rawRegistrationNumber: string, rawFullName: string) => {
-      if (!user || !cashierSession) {
-        throw new Error('Terminal não autenticado.');
+      if (!user || !cashierSession || authorizationStatus !== 'authorized') {
+        throw new Error('Terminal não autorizado.');
       }
 
       const cleanReg = sanitizeRegistrationNumber(rawRegistrationNumber);
@@ -311,7 +535,9 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
       const batch = writeBatch(db);
       const customerRef = doc(db, 'customers', cleanReg);
       const deliveryRef = doc(collection(db, 'deliveries'));
-      const operatorLabel = sanitizeOperatorLabel(cashierSession.operatorName);
+      const operatorLabel = sanitizeOperatorLabel(
+        authorizedProfile?.label || user.email || cashierSession.operatorName
+      );
 
       batch.set(customerRef, {
         registrationNumber: cleanReg,
@@ -344,13 +570,13 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
         handleFirestoreError(error, OperationType.WRITE, `customers/${cleanReg}`);
       }
     },
-    [user, cashierSession]
+    [user, cashierSession, authorizationStatus, authorizedProfile]
   );
 
   const confirmManagerException = useCallback(
     async (customer: CustomerRecord, rawJustification: string) => {
-      if (!user || !cashierSession) {
-        throw new Error('Terminal não autenticado.');
+      if (!user || !cashierSession || authorizationStatus !== 'authorized') {
+        throw new Error('Terminal não autorizado.');
       }
 
       const cleanJustification = sanitizeJustification(rawJustification);
@@ -361,7 +587,9 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
       const batch = writeBatch(db);
       const customerRef = doc(db, 'customers', customer.registrationNumber);
       const deliveryRef = doc(collection(db, 'deliveries'));
-      const operatorLabel = sanitizeOperatorLabel(cashierSession.operatorName);
+      const operatorLabel = sanitizeOperatorLabel(
+        authorizedProfile?.label || user.email || cashierSession.operatorName
+      );
 
       batch.update(customerRef, {
         deliveryCount: customer.deliveryCount + 1,
@@ -387,15 +615,69 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
         handleFirestoreError(error, OperationType.WRITE, `deliveries/exception/${customer.registrationNumber}`);
       }
     },
-    [user, cashierSession]
+    [user, cashierSession, authorizationStatus, authorizedProfile]
   );
 
-  const dataLoading = Boolean(user && (!customersLoaded || !deliveriesLoaded));
+  const deleteDelivery = useCallback(
+    async (targetDelivery: DeliveryRecord) => {
+      if (!user || authorizationStatus !== 'authorized') {
+        throw new Error('Terminal não autorizado.');
+      }
+
+      const regNum = targetDelivery.registrationNumber;
+      const customer = customersByNumber.get(regNum);
+      const remaining = deliveries
+        .filter((item) => item.registrationNumber === regNum && item.id !== targetDelivery.id)
+        .sort((a, b) => {
+          const msA = a.deliveredAt ? a.deliveredAt.toMillis() : 0;
+          const msB = b.deliveredAt ? b.deliveredAt.toMillis() : 0;
+          return msA - msB;
+        });
+
+      const batch = writeBatch(db);
+      const deliveryRef = doc(db, 'deliveries', targetDelivery.id);
+      const customerRef = doc(db, 'customers', regNum);
+
+      batch.delete(deliveryRef);
+
+      if (customer) {
+        if (customer.deliveryCount <= 1 || remaining.length === 0) {
+          batch.delete(customerRef);
+        } else {
+          const earliest = remaining[0];
+          const latest = remaining[remaining.length - 1];
+          batch.update(customerRef, {
+            deliveryCount: customer.deliveryCount - 1,
+            firstDeliveryAt: earliest.deliveredAt ?? customer.firstDeliveryAt ?? serverTimestamp(),
+            firstDeliveryBranch: earliest.branch,
+            lastDeliveryAt: latest.deliveredAt ?? customer.lastDeliveryAt ?? serverTimestamp(),
+            lastDeliveryBranch: latest.branch,
+            updatedAt: serverTimestamp(),
+          });
+        }
+      }
+
+      try {
+        await batch.commit();
+      } catch (error) {
+        handleFirestoreError(error, OperationType.DELETE, `deliveries/${targetDelivery.id}`);
+      }
+    },
+    [user, authorizationStatus, customersByNumber, deliveries]
+  );
+
+  const dataLoading = Boolean(
+    user && authorizationStatus === 'authorized' && (!customersLoaded || !deliveriesLoaded)
+  );
+  const authorizedEmailsLoading = Boolean(user && isAdminUser && !authorizedEmailsLoaded);
 
   const value = useMemo<CalendarContextValue>(
     () => ({
       user,
       authReady,
+      isAdminUser,
+      authorizationStatus,
+      authorizedProfile,
       authError,
       isSigningIn,
       signInWithGoogle,
@@ -407,8 +689,14 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
       customersByNumber,
       deliveries,
       dataLoading,
+      authorizedEmails,
+      authorizedEmailsLoading,
+      addAuthorizedEmail,
+      updateAuthorizedEmail,
+      removeAuthorizedEmail,
       confirmRegularDelivery,
       confirmManagerException,
+      deleteDelivery,
       toasts,
       pushToast,
       dismissToast,
@@ -416,6 +704,9 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
     [
       user,
       authReady,
+      isAdminUser,
+      authorizationStatus,
+      authorizedProfile,
       authError,
       isSigningIn,
       signInWithGoogle,
@@ -427,8 +718,14 @@ export function CalendarProvider({ children }: { children: React.ReactNode }) {
       customersByNumber,
       deliveries,
       dataLoading,
+      authorizedEmails,
+      authorizedEmailsLoading,
+      addAuthorizedEmail,
+      updateAuthorizedEmail,
+      removeAuthorizedEmail,
       confirmRegularDelivery,
       confirmManagerException,
+      deleteDelivery,
       toasts,
       pushToast,
       dismissToast,

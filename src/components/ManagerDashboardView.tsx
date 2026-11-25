@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  BarChart3,
   Building2,
   Calendar,
   CheckCircle2,
@@ -7,16 +8,23 @@ import {
   Filter,
   Search,
   ShieldCheck,
+  Trash2,
+  Users,
   X,
 } from 'lucide-react';
-import { BRANCHES, BranchName, DeliveryType } from '../types';
+import { BRANCHES, BranchName, DeliveryRecord, DeliveryType } from '../types';
 import { useCalendar } from '../context/CalendarContext';
 import { formatDateTimeBR, toLocalDateInputValue } from '../utils/validation';
 import { exportDeliveriesToCsv } from '../utils/csvExport';
+import { StoreAccountsManager } from './StoreAccountsManager';
+import { DeleteDeliveryModal } from './DeleteDeliveryModal';
 
 export function ManagerDashboardView() {
-  const { deliveries, dataLoading, pushToast } = useCalendar();
+  const { deliveries, customersByNumber, dataLoading, authorizedEmails, isAdminUser, pushToast } =
+    useCalendar();
 
+  const [activeTab, setActiveTab] = useState<'reports' | 'accounts'>('reports');
+  const [deliveryToDelete, setDeliveryToDelete] = useState<DeliveryRecord | null>(null);
   const [branchFilter, setBranchFilter] = useState<'ALL' | BranchName>('ALL');
   const [typeFilter, setTypeFilter] = useState<'ALL' | DeliveryType>('ALL');
   const [dateFilter, setDateFilter] = useState<string>('');
@@ -137,18 +145,66 @@ export function ManagerDashboardView() {
           </p>
         </div>
 
+        {activeTab === 'reports' && (
+          <button
+            type="button"
+            onClick={handleExport}
+            className="min-h-[48px] inline-flex items-center justify-center gap-2.5 bg-[#649A4E] hover:bg-[#5E6954] text-white font-display font-semibold text-sm px-5 py-3 rounded-full shadow-md shadow-[#649A4E]/15 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <Download className="w-4 h-4" />
+            Exportar Relatório (.CSV / Excel)
+          </button>
+        )}
+      </div>
+
+      {/* Segmented Dashboard Tabs */}
+      <div
+        role="tablist"
+        aria-label="Seções do Painel Gerencial"
+        className="inline-flex items-center gap-1 p-1 rounded-full bg-[#DDE7D9]/70 border border-[#DDE7D9]"
+      >
         <button
           type="button"
-          onClick={handleExport}
-          className="min-h-[48px] inline-flex items-center justify-center gap-2.5 bg-[#649A4E] hover:bg-[#5E6954] text-white font-display font-semibold text-sm px-5 py-3 rounded-full shadow-md shadow-[#649A4E]/15 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          role="tab"
+          aria-selected={activeTab === 'reports'}
+          onClick={() => setActiveTab('reports')}
+          className={`min-h-[42px] px-4 sm:px-5 py-2 rounded-full text-xs sm:text-sm font-display font-medium inline-flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeTab === 'reports'
+              ? 'bg-[#649A4E] text-white shadow-sm'
+              : 'text-[#5E6954] hover:text-[#575A4E] hover:bg-white/70'
+          }`}
         >
-          <Download className="w-4 h-4" />
-          Exportar Relatório (.CSV / Excel)
+          <BarChart3 className="w-4 h-4" />
+          Métricas e Auditoria
+        </button>
+
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'accounts'}
+          onClick={() => setActiveTab('accounts')}
+          className={`min-h-[42px] px-4 sm:px-5 py-2 rounded-full text-xs sm:text-sm font-display font-medium inline-flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeTab === 'accounts'
+              ? 'bg-[#649A4E] text-white shadow-sm'
+              : 'text-[#5E6954] hover:text-[#575A4E] hover:bg-white/70'
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Contas das Lojas</span>
+          {isAdminUser && (
+            <span className="tabular-nums opacity-85">
+              ({authorizedEmails.filter((e) => e.active).length + 1})
+            </span>
+          )}
         </button>
       </div>
 
-      {/* Primary KPI Row */}
-      <section className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5">
+      {activeTab === 'accounts' ? (
+        <StoreAccountsManager />
+      ) : (
+        <>
+          {/* Primary KPI Row */}
+          <section className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-5">
         <div className="soft-card rounded-3xl border border-[#DDE7D9] p-6">
           <div className="text-xs font-medium text-[#64795A] uppercase tracking-wider">
             Total de Calendários Entregues
@@ -373,7 +429,8 @@ export function ManagerDashboardView() {
                   <th className="py-3.5 px-4">Cliente</th>
                   <th className="py-3.5 px-4 whitespace-nowrap">Filial</th>
                   <th className="py-3.5 px-4 whitespace-nowrap">Tipo</th>
-                  <th className="py-3.5 px-5">Justificativa</th>
+                  <th className="py-3.5 px-4">Justificativa</th>
+                  <th className="py-3.5 px-5 text-right whitespace-nowrap">Ação</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#DDE7D9]/70 text-sm">
@@ -407,8 +464,20 @@ export function ManagerDashboardView() {
                           </span>
                         )}
                       </td>
-                      <td className="py-3.5 px-5 text-xs text-[#5E6954] max-w-xs">
+                      <td className="py-3.5 px-4 text-xs text-[#5E6954] max-w-xs">
                         {isException ? item.justification : '—'}
+                      </td>
+                      <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => setDeliveryToDelete(item)}
+                          title="Excluir / Estornar entrega (requer PIN)"
+                          aria-label={`Excluir entrega de ${item.customerName}`}
+                          className="min-h-[38px] px-3 rounded-xl border border-[#DDE7D9] bg-white hover:border-[#C84343]/40 hover:bg-[#C84343]/5 hover:text-[#C84343] text-[#64795A] text-xs font-medium inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Excluir
+                        </button>
                       </td>
                     </tr>
                   );
@@ -417,7 +486,19 @@ export function ManagerDashboardView() {
             </table>
           </div>
         )}
-      </section>
+          </section>
+        </>
+      )}
+
+      <DeleteDeliveryModal
+        delivery={deliveryToDelete}
+        customerDeliveryCount={
+          deliveryToDelete
+            ? customersByNumber.get(deliveryToDelete.registrationNumber)?.deliveryCount ?? 1
+            : 1
+        }
+        onClose={() => setDeliveryToDelete(null)}
+      />
     </main>
   );
 }
